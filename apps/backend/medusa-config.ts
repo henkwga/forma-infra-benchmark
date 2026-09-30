@@ -5,6 +5,21 @@ loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 module.exports = defineConfig({
 modules: [
   {
+    resolve: "@medusajs/medusa/caching",
+    options: {
+      providers: [
+        {
+          resolve: "@medusajs/caching-redis",
+          id: "caching-redis",
+          is_default: true,
+          options: {
+            redisUrl: process.env.REDIS_URL,
+          },
+        },
+      ],
+    },
+  },
+  {
     resolve: "@medusajs/medusa/event-bus-redis",
     options: {
       redisUrl: process.env.REDIS_URL,
