@@ -11,6 +11,14 @@ modules: [
     },
   },
   {
+    resolve: "@medusajs/medusa/workflow-engine-redis",
+    options: {
+      redis: {
+        redisUrl: process.env.REDIS_URL,
+      },
+    },
+  },
+  {
     resolve: "@medusajs/medusa/locking",
     options: {
       providers: [
