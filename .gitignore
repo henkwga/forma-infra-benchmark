@@ -55,3 +55,11 @@ yarn-error.log*
 ehthumbs.db
 Thumbs.db
 **/.DS_Store
+
+# Forma benchmark data
+apps/forma-banchmark/benchmark-data/input/*
+apps/forma-banchmark/benchmark-data/output/*
+
+# Keep directories
+!apps/forma-banchmark/benchmark-data/input/.gitkeep
+!apps/forma-banchmark/benchmark-data/output/.gitkeep

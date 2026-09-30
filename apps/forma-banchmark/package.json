@@ -1,0 +1,26 @@
+{
+  "name": "@forma/benchmark",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "start:api": "cross-env FORMA_RUNTIME=api node dist/index.js",
+    "start:worker": "cross-env FORMA_RUNTIME=worker node dist/index.js"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "graphile-worker": "^0.18.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.2"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}
