@@ -1,279 +1,678 @@
 import sharp from "sharp"
-import { mkdir, stat } from "node:fs/promises"
-import path from "node:path"
+
+import {
+    mkdir,
+    rm,
+    stat,
+} from "node:fs/promises"
+
+import {
+    basename,
+    extname,
+    join,
+} from "node:path"
+
+import { tmpdir } from "node:os"
+
+import {
+    downloadObjectToFile,
+    uploadFile,
+} from "./storage.js"
 
 export type ImageBenchmarkPayload = {
-  benchmarkId: string
-  inputPath: string
+    benchmarkId: string
+    objectKey: string
 }
 
 type MemorySnapshot = {
-  rssMb: number
-  heapUsedMb: number
-  heapTotalMb: number
-  externalMb: number
-  arrayBuffersMb: number
+    rssMb: number
+    heapUsedMb: number
+    heapTotalMb: number
+    externalMb: number
+    arrayBuffersMb: number
 }
 
-type MemoryPeak = MemorySnapshot & {
-  elapsedMs: number
-}
+type MemoryPeak =
+    MemorySnapshot & {
+        elapsedMs: number
+    }
 
 function bytesToMb(bytes: number) {
-  return Math.round(
-    (bytes / 1024 / 1024) * 100
-  ) / 100
+    return (
+        Math.round(
+            (bytes / 1024 / 1024) *
+                100
+        ) / 100
+    )
 }
 
 function memorySnapshot(): MemorySnapshot {
-  const memory = process.memoryUsage()
+    const memory =
+        process.memoryUsage()
 
-  return {
-    rssMb: bytesToMb(memory.rss),
-    heapUsedMb: bytesToMb(
-      memory.heapUsed
-    ),
-    heapTotalMb: bytesToMb(
-      memory.heapTotal
-    ),
-    externalMb: bytesToMb(
-      memory.external
-    ),
-    arrayBuffersMb: bytesToMb(
-      memory.arrayBuffers
-    ),
-  }
+    return {
+        rssMb:
+            bytesToMb(memory.rss),
+
+        heapUsedMb:
+            bytesToMb(
+                memory.heapUsed
+            ),
+
+        heapTotalMb:
+            bytesToMb(
+                memory.heapTotal
+            ),
+
+        externalMb:
+            bytesToMb(
+                memory.external
+            ),
+
+        arrayBuffersMb:
+            bytesToMb(
+                memory.arrayBuffers
+            ),
+    }
 }
 
 function createMemorySampler(
-  startedAt: number,
-  intervalMs = 10
+    startedAt: number,
+    intervalMs = 10
 ) {
-  const initial = memorySnapshot()
+    const initial =
+        memorySnapshot()
 
-  let samples = 1
+    let samples = 1
 
-  let peak: MemoryPeak = {
-    ...initial,
-    elapsedMs: 0,
-  }
-
-  const sample = () => {
-    const current = memorySnapshot()
-    samples += 1
-
-    if (current.rssMb > peak.rssMb) {
-      peak = {
-        ...current,
-        elapsedMs:
-          Date.now() - startedAt,
-      }
+    let peak: MemoryPeak = {
+        ...initial,
+        elapsedMs: 0,
     }
-  }
 
-  const interval = setInterval(
-    sample,
-    intervalMs
-  )
+    const sample = () => {
+        const current =
+            memorySnapshot()
 
-  return {
-    stop() {
-      clearInterval(interval)
+        samples += 1
 
-      // Uma última medição no momento
-      // imediatamente posterior ao trabalho.
-      sample()
+        if (
+            current.rssMb >
+            peak.rssMb
+        ) {
+            peak = {
+                ...current,
+                elapsedMs:
+                    Date.now() -
+                    startedAt,
+            }
+        }
+    }
 
-      return {
-        intervalMs,
-        samples,
-        peak,
-      }
-    },
-  }
+    const interval =
+        setInterval(
+            sample,
+            intervalMs
+        )
+
+    return {
+        stop() {
+            clearInterval(interval)
+
+            sample()
+
+            return {
+                intervalMs,
+                samples,
+                peak,
+            }
+        },
+    }
 }
 
 export async function runImageBenchmark(
-  payload: ImageBenchmarkPayload
+    payload: ImageBenchmarkPayload
 ) {
-  const startedAt = Date.now()
+    if (
+        !payload?.benchmarkId ||
+        typeof payload.benchmarkId !==
+            "string"
+    ) {
+        throw new Error(
+            "image_benchmark requires benchmarkId"
+        )
+    }
 
-  const inputPath = path.resolve(
-    payload.inputPath
-  )
+    if (
+        !payload?.objectKey ||
+        typeof payload.objectKey !==
+            "string"
+    ) {
+        throw new Error(
+            "image_benchmark requires objectKey"
+        )
+    }
 
-  const outputDirectory = path.resolve(
-    process.cwd(),
-    "benchmark-data",
-    "output"
-  )
+    const startedAt =
+        Date.now()
 
-  await mkdir(outputDirectory, {
-    recursive: true,
-  })
+    const extension =
+        extname(payload.objectKey) ||
+        ".bin"
 
-  const outputPath = path.join(
-    outputDirectory,
-    `${payload.benchmarkId}.jpg`
-  )
+    const workDirectory =
+        join(
+            tmpdir(),
+            "forma-image-benchmark",
+            payload.benchmarkId
+        )
 
-  const inputFile = await stat(inputPath)
+    const inputPath =
+        join(
+            workDirectory,
+            `source${extension}`
+        )
 
-  const memoryBefore =
-    memorySnapshot()
+    const previewPath =
+        join(
+            workDirectory,
+            "preview.jpg"
+        )
 
-  const metadataStartedAt =
-    Date.now()
+    const sourceBaseName =
+        basename(
+            payload.objectKey,
+            extension
+        )
 
-  const metadata =
-    await sharp(inputPath).metadata()
+    const previewObjectKey =
+        `benchmark/output/` +
+        `${payload.benchmarkId}-` +
+        `${sourceBaseName}-preview.jpg`
 
-  const metadataElapsedMs =
-    Date.now() - metadataStartedAt
-
-  const memoryAfterMetadata =
-    memorySnapshot()
-
-  /*
-   * A amostragem começa imediatamente
-   * antes da operação pesada.
-   */
-  const previewStartedAt =
-    Date.now()
-
-  const sampler =
-    createMemorySampler(
-      previewStartedAt,
-      10
+    await mkdir(
+        workDirectory,
+        {
+            recursive: true,
+        }
     )
 
-  let previewInfo:
-    | sharp.OutputInfo
-    | undefined
+    /*
+     * Este sampler cobre o job inteiro:
+     *
+     * download
+     * metadata
+     * preview
+     * upload
+     *
+     * Assim conseguimos observar também
+     * qualquer pico fora do Sharp.
+     */
+    const sampler =
+        createMemorySampler(
+            startedAt,
+            10
+        )
 
-  let memorySampling:
-    ReturnType<
-      ReturnType<
-        typeof createMemorySampler
-      >["stop"]
-    >
+    let memorySampling:
+        ReturnType<
+            ReturnType<
+                typeof createMemorySampler
+            >["stop"]
+        >
+        | undefined
 
-  try {
-    previewInfo =
-      await sharp(inputPath)
-        .autoOrient()
-        .resize({
-          width: 2000,
-          height: 2000,
-          fit: "inside",
-          withoutEnlargement: true,
-        })
-        .jpeg({
-          quality: 82,
-        })
-        .toFile(outputPath)
-  } finally {
-    memorySampling =
-      sampler.stop()
-  }
+    try {
+        console.log(
+            JSON.stringify({
+                event:
+                    "image_benchmark_started",
+                benchmarkId:
+                    payload.benchmarkId,
+                objectKey:
+                    payload.objectKey,
+                memory:
+                    memorySnapshot(),
+                timestamp:
+                    new Date()
+                        .toISOString(),
+            })
+        )
 
-  if (!previewInfo) {
-    throw new Error(
-      "Preview processing did not produce output information"
-    )
-  }
+        /*
+         * DOWNLOAD
+         */
+        const downloadStartedAt =
+            Date.now()
 
-  const previewElapsedMs =
-    Date.now() - previewStartedAt
+        await downloadObjectToFile(
+            payload.objectKey,
+            inputPath
+        )
 
-  const memoryAfterPreview =
-    memorySnapshot()
+        const downloadElapsedMs =
+            Date.now() -
+            downloadStartedAt
 
-  const totalElapsedMs =
-    Date.now() - startedAt
+        const inputFile =
+            await stat(inputPath)
 
-  return {
-    event:
-      "image_benchmark_completed",
+        console.log(
+            JSON.stringify({
+                event:
+                    "image_benchmark_downloaded",
+                benchmarkId:
+                    payload.benchmarkId,
+                sizeBytes:
+                    inputFile.size,
+                sizeMb:
+                    bytesToMb(
+                        inputFile.size
+                    ),
+                downloadMs:
+                    downloadElapsedMs,
+                memory:
+                    memorySnapshot(),
+                timestamp:
+                    new Date()
+                        .toISOString(),
+            })
+        )
 
-    benchmarkId:
-      payload.benchmarkId,
+        /*
+         * METADATA
+         */
+        const metadataStartedAt =
+            Date.now()
 
-    input: {
-      path: inputPath,
-      sizeBytes: inputFile.size,
-      sizeMb:
-        bytesToMb(inputFile.size),
-    },
+        const metadata =
+            await sharp(
+                inputPath
+            ).metadata()
 
-    metadata: {
-      format:
-        metadata.format ?? null,
-      width:
-        metadata.width ?? null,
-      height:
-        metadata.height ?? null,
-      channels:
-        metadata.channels ?? null,
-      depth:
-        metadata.depth ?? null,
-      density:
-        metadata.density ?? null,
-      orientation:
-        metadata.orientation ?? null,
-      space:
-        metadata.space ?? null,
-      hasAlpha:
-        metadata.hasAlpha ?? null,
-      pages:
-        metadata.pages ?? null,
-    },
+        const metadataElapsedMs =
+            Date.now() -
+            metadataStartedAt
 
-    preview: {
-      path: outputPath,
-      format: previewInfo.format,
-      width: previewInfo.width,
-      height: previewInfo.height,
-      channels:
-        previewInfo.channels,
-      sizeBytes: previewInfo.size,
-      sizeMb:
-        bytesToMb(
-          previewInfo.size
-        ),
-    },
+        const memoryAfterMetadata =
+            memorySnapshot()
 
-    timing: {
-      metadataMs:
-        metadataElapsedMs,
-      previewMs:
-        previewElapsedMs,
-      totalMs:
-        totalElapsedMs,
-    },
+        /*
+         * PREVIEW
+         */
+        const previewStartedAt =
+            Date.now()
 
-    memory: {
-      before:
-        memoryBefore,
+        const previewInfo =
+            await sharp(inputPath)
+                .autoOrient()
+                .resize({
+                    width: 2000,
+                    height: 2000,
+                    fit: "inside",
+                    withoutEnlargement:
+                        true,
+                })
+                .jpeg({
+                    quality: 82,
+                })
+                .toFile(
+                    previewPath
+                )
 
-      afterMetadata:
-        memoryAfterMetadata,
+        const previewElapsedMs =
+            Date.now() -
+            previewStartedAt
 
-      peakObservedDuringPreview:
-        memorySampling.peak,
+        const memoryAfterPreview =
+            memorySnapshot()
 
-      afterPreview:
-        memoryAfterPreview,
+        console.log(
+            JSON.stringify({
+                event:
+                    "image_benchmark_processed",
 
-      sampling: {
-        intervalMs:
-          memorySampling.intervalMs,
-        samples:
-          memorySampling.samples,
-      },
-    },
+                benchmarkId:
+                    payload.benchmarkId,
 
-    timestamp:
-      new Date().toISOString(),
-  }
+                metadata: {
+                    format:
+                        metadata.format ??
+                        null,
+
+                    width:
+                        metadata.width ??
+                        null,
+
+                    height:
+                        metadata.height ??
+                        null,
+
+                    channels:
+                        metadata.channels ??
+                        null,
+
+                    depth:
+                        metadata.depth ??
+                        null,
+
+                    density:
+                        metadata.density ??
+                        null,
+
+                    orientation:
+                        metadata.orientation ??
+                        null,
+
+                    space:
+                        metadata.space ??
+                        null,
+
+                    hasAlpha:
+                        metadata.hasAlpha ??
+                        null,
+
+                    pages:
+                        metadata.pages ??
+                        null,
+                },
+
+                preview: {
+                    format:
+                        previewInfo.format,
+
+                    width:
+                        previewInfo.width,
+
+                    height:
+                        previewInfo.height,
+
+                    channels:
+                        previewInfo.channels,
+
+                    sizeBytes:
+                        previewInfo.size,
+
+                    sizeMb:
+                        bytesToMb(
+                            previewInfo.size
+                        ),
+                },
+
+                metadataMs:
+                    metadataElapsedMs,
+
+                previewMs:
+                    previewElapsedMs,
+
+                memory:
+                    memoryAfterPreview,
+
+                timestamp:
+                    new Date()
+                        .toISOString(),
+            })
+        )
+
+        /*
+         * UPLOAD DA PREVIEW
+         */
+        const uploadStartedAt =
+            Date.now()
+
+        await uploadFile(
+            previewPath,
+            previewObjectKey,
+            "image/jpeg"
+        )
+
+        const uploadElapsedMs =
+            Date.now() -
+            uploadStartedAt
+
+        const totalElapsedMs =
+            Date.now() -
+            startedAt
+
+        /*
+         * Captura final antes
+         * de encerrar o sampler.
+         */
+        memorySampling =
+            sampler.stop()
+
+        const result = {
+            event:
+                "image_benchmark_completed",
+
+            benchmarkId:
+                payload.benchmarkId,
+
+            input: {
+                objectKey:
+                    payload.objectKey,
+
+                temporaryPath:
+                    inputPath,
+
+                sizeBytes:
+                    inputFile.size,
+
+                sizeMb:
+                    bytesToMb(
+                        inputFile.size
+                    ),
+            },
+
+            metadata: {
+                format:
+                    metadata.format ??
+                    null,
+
+                width:
+                    metadata.width ??
+                    null,
+
+                height:
+                    metadata.height ??
+                    null,
+
+                channels:
+                    metadata.channels ??
+                    null,
+
+                depth:
+                    metadata.depth ??
+                    null,
+
+                density:
+                    metadata.density ??
+                    null,
+
+                orientation:
+                    metadata.orientation ??
+                    null,
+
+                space:
+                    metadata.space ??
+                    null,
+
+                hasAlpha:
+                    metadata.hasAlpha ??
+                    null,
+
+                pages:
+                    metadata.pages ??
+                    null,
+            },
+
+            preview: {
+                objectKey:
+                    previewObjectKey,
+
+                format:
+                    previewInfo.format,
+
+                width:
+                    previewInfo.width,
+
+                height:
+                    previewInfo.height,
+
+                channels:
+                    previewInfo.channels,
+
+                sizeBytes:
+                    previewInfo.size,
+
+                sizeMb:
+                    bytesToMb(
+                        previewInfo.size
+                    ),
+            },
+
+            timing: {
+                downloadMs:
+                    downloadElapsedMs,
+
+                metadataMs:
+                    metadataElapsedMs,
+
+                previewMs:
+                    previewElapsedMs,
+
+                uploadMs:
+                    uploadElapsedMs,
+
+                totalMs:
+                    totalElapsedMs,
+            },
+
+            memory: {
+                afterMetadata:
+                    memoryAfterMetadata,
+
+                afterPreview:
+                    memoryAfterPreview,
+
+                peakObserved:
+                    memorySampling.peak,
+
+                sampling: {
+                    intervalMs:
+                        memorySampling
+                            .intervalMs,
+
+                    samples:
+                        memorySampling
+                            .samples,
+                },
+            },
+
+            timestamp:
+                new Date()
+                    .toISOString(),
+        }
+
+        console.log(
+            JSON.stringify(result)
+        )
+
+        return result
+    } catch (error) {
+        /*
+         * Garante que o sampler seja
+         * encerrado também em falhas.
+         */
+        if (!memorySampling) {
+            memorySampling =
+                sampler.stop()
+        }
+
+        console.error(
+            JSON.stringify({
+                event:
+                    "image_benchmark_failed",
+
+                benchmarkId:
+                    payload.benchmarkId,
+
+                objectKey:
+                    payload.objectKey,
+
+                peakObserved:
+                    memorySampling
+                        .peak,
+
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : String(error),
+
+                stack:
+                    error instanceof Error
+                        ? error.stack
+                        : undefined,
+
+                timestamp:
+                    new Date()
+                        .toISOString(),
+            })
+        )
+
+        throw error
+    } finally {
+        /*
+         * O disco do runtime é temporário.
+         * Source e preview não devem
+         * permanecer no container.
+         */
+        try {
+            await rm(
+                workDirectory,
+                {
+                    recursive: true,
+                    force: true,
+                }
+            )
+
+            console.log(
+                JSON.stringify({
+                    event:
+                        "image_benchmark_tmp_cleaned",
+
+                    benchmarkId:
+                        payload.benchmarkId,
+
+                    timestamp:
+                        new Date()
+                            .toISOString(),
+                })
+            )
+        } catch (
+            cleanupError
+        ) {
+            console.error(
+                JSON.stringify({
+                    event:
+                        "image_benchmark_tmp_cleanup_failed",
+
+                    benchmarkId:
+                        payload.benchmarkId,
+
+                    error:
+                        cleanupError instanceof
+                        Error
+                            ? cleanupError.message
+                            : String(
+                                  cleanupError
+                              ),
+
+                    timestamp:
+                        new Date()
+                            .toISOString(),
+                })
+            )
+        }
+    }
 }

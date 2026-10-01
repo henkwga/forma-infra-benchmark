@@ -9,6 +9,9 @@ export async function startApi() {
         logger: true,
     })
 
+    /**
+     * Health check
+     */
     app.get("/health", async () => {
         return {
             status: "ok",
@@ -18,6 +21,12 @@ export async function startApi() {
         }
     })
 
+    /**
+     * Synthetic benchmark job
+     *
+     * Used to validate:
+     * API -> PostgreSQL -> Graphile Worker -> Worker
+     */
     app.post("/benchmark/jobs", async (request, reply) => {
         const body = request.body as {
             durationMs?: number
@@ -31,7 +40,8 @@ export async function startApi() {
             durationMs > 60_000
         ) {
             return reply.code(400).send({
-                error: "durationMs must be an integer between 100 and 60000",
+                error:
+                    "durationMs must be an integer between 100 and 60000",
             })
         }
 
@@ -57,19 +67,44 @@ export async function startApi() {
         })
     })
 
+    /**
+     * Image benchmark job
+     *
+     * The API does NOT receive a local filesystem path anymore.
+     *
+     * It receives the key of an object already stored in R2.
+     *
+     * Flow:
+     *
+     * API
+     *   -> Graphile Worker
+     *   -> Forma Worker
+     *   -> R2 GetObject
+     *   -> /tmp
+     *   -> Sharp
+     *   -> R2 PutObject (preview)
+     */
     app.post(
         "/benchmark/images",
         async (request, reply) => {
             const body = request.body as {
-                inputPath?: string
+                objectKey?: string
             }
 
             if (
-                !body?.inputPath ||
-                typeof body.inputPath !== "string"
+                !body?.objectKey ||
+                typeof body.objectKey !== "string"
             ) {
                 return reply.code(400).send({
-                    error: "inputPath is required",
+                    error: "objectKey is required",
+                })
+            }
+
+            const objectKey = body.objectKey.trim()
+
+            if (!objectKey) {
+                return reply.code(400).send({
+                    error: "objectKey cannot be empty",
                 })
             }
 
@@ -79,7 +114,7 @@ export async function startApi() {
                 "image_benchmark",
                 {
                     benchmarkId,
-                    inputPath: body.inputPath,
+                    objectKey,
                 },
                 {
                     maxAttempts: 1,
@@ -91,12 +126,18 @@ export async function startApi() {
             return reply.code(202).send({
                 benchmarkId,
                 graphileJobId: job.id,
-                inputPath: body.inputPath,
+                objectKey,
                 status: "queued",
             })
         }
     )
 
+    /**
+     * Start HTTP server
+     *
+     * Railway supplies PORT automatically.
+     * Local fallback: 3000.
+     */
     const port = Number(process.env.PORT || 3000)
 
     await app.listen({

@@ -69,6 +69,11 @@ const taskList: TaskList = {
         rawPayload,
         helpers
     ) => {
+        console.log(
+            "[FORMA BENCHMARK] RAW IMAGE PAYLOAD:",
+            JSON.stringify(rawPayload)
+        )
+
         const payload =
             rawPayload as ImageBenchmarkPayload
 
@@ -94,6 +99,10 @@ const taskList: TaskList = {
                         error instanceof Error
                             ? error.message
                             : String(error),
+                    stack:
+                        error instanceof Error
+                            ? error.stack
+                            : undefined,
                     timestamp:
                         new Date().toISOString(),
                 })
